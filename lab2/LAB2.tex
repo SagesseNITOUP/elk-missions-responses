@@ -1,0 +1,198 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{../../common/elkdoc}
+
+\begin{document}
+
+\labheader{Lab 2 — Logstash}{3.5 h · autonomous · graded deliverable}{Session 4}
+
+\section*{Rules of the game}
+
+You work autonomously, alone or in pairs. Instructors clarify \emph{missions},
+never \emph{solutions}. Allowed help: the \textbf{Course 2 slides} and the
+\textbf{official Logstash documentation} — nothing else.
+
+\code{scripts/check.sh} is your referee: it prints PASS/FAIL per mission
+against the live cluster, and you can run it as often as you like. Everything
+you need was covered in Course 2 — when stuck, ask yourself \emph{which slide
+was this?}, then find the matching documentation page.
+
+\begin{deliverbox}[Deliverable (graded /20, deadline: \underline{\hspace{2cm}})]
+Your final \code{pipeline/pipeline.conf} + a 10-line write-up containing:
+(a) the mission 1 explanation, (b) grok vs.\ dissect — what you chose for the
+app logs and \emph{why}, (c) your dead-letter strategy and how you verified
+that \textbf{nothing is silently lost}.
+\end{deliverbox}
+
+\section*{Starter kit \& setup}
+
+\begin{lstlisting}[language=bash]
+lab2/
+|-- docker-compose.yml         # ES + Kibana + Logstash (pipeline/ auto-reloads)
+|-- generator/generate_logs.py # writes the three log sources into logs/
+|-- pipeline/pipeline.conf     # inputs wired, filter{} empty: your canvas
+|-- scripts/check.sh           # the referee
+`-- LAB2.pdf                   # this document
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash]
+docker compose up -d
+python3 generator/generate_logs.py        # keep it running in a terminal
+docker compose logs -f logstash           # watch your rubydebug output
+\end{lstlisting}
+
+Three sources land in \code{logs/}, already mounted into the Logstash
+container at \code{/var/log/shopfast/}:
+
+\begin{lstlisting}
+access.log : 81.2.69.142 - - [26/Jul/2026:01:47:03 +0000] "GET /checkout HTTP/1.1" 502 1370 "-" "Mozilla/5.0..."
+app.log    : 2026-07-26T01:47:11Z|payment|ERROR|order=48221|amount=59.90|msg=card declined
+orders.csv : 48222,2026-07-26T01:48:02Z,FR,3,129.50
+\end{lstlisting}
+
+\begin{trapbox}
+About 2\% of the lines in \emph{every} source are malformed. That is not a bug
+in the generator — it is the whole point of missions 6 and 7. Plan for it from
+the start.
+\end{trapbox}
+
+\mission{First flow, and a mystery}{25 min}
+
+\begin{enumerate}
+  \item Bring the stack up, start the generator, and confirm raw events from
+        \textbf{all three sources} appear in the Logstash output.
+  \item Now run \code{docker compose restart logstash}. Observe what is re-read
+        and what is not. Then \code{docker compose down \&\& docker compose up -d}.
+        Observe again.
+  \item \textbf{Write-up}: explain both observations with the correct Logstash
+        concept, and name the setting you would use to force a full replay
+        during development.
+\end{enumerate}
+
+\begin{whybox}[Expected result]
+Events from the three files visible in \code{docker compose logs -f logstash};
+a correct explanation of what survives a restart, what survives a
+\code{down}, and why.
+\end{whybox}
+
+\mission{Tame the nginx source}{45 min}
+
+For events coming from \code{access.log} (tag \code{web}), produce documents
+where:
+\begin{itemize}
+  \item the line is fully parsed — no giant \code{message}-only events;
+  \item \code{status} and \code{bytes} are \textbf{integers}, named exactly like that;
+  \item \code{@timestamp} is the time \textbf{inside the log line}, not the ingestion time;
+  \item the raw parsed timestamp string no longer pollutes the document.
+\end{itemize}
+
+\begin{whybox}[Expected result]
+Typed fields and a correct \code{@timestamp} in rubydebug. The two \emph{M2}
+lines of \code{check.sh} turn green once mission 6 ships to Elasticsearch.
+\end{whybox}
+
+\begin{docbox}[Doc pointers]
+Logstash reference: \emph{grok filter}, \emph{grok patterns list},
+\emph{date filter}, \emph{mutate filter}.
+\end{docbox}
+
+\mission{Tame the app source}{35 min}
+
+For events from \code{app.log} (tag \code{app}), produce documents with:
+\begin{itemize}
+  \item fields \code{service}, \code{level}, \code{order} (integer),
+        \code{amount} (float), \code{msg};
+  \item \code{@timestamp} taken from the line;
+  \item parsing implemented with \textbf{grok \emph{or} dissect — your choice}.
+\end{itemize}
+
+\textbf{Write-up}: justify the choice in 3 lines (think: format regularity,
+failure behavior, performance). A ``both would work, here is why I picked X''
+answer is a good answer.
+
+\mission{Tame the CSV source}{25 min}
+
+For events from \code{orders.csv} (tag \code{orders}):
+\begin{itemize}
+  \item columns are \code{order\_id}, \code{ts}, \code{customer\_country},
+        \code{items}, \code{amount};
+  \item \code{items} is an integer, \code{amount} a \textbf{float};
+  \item \code{@timestamp} comes from the \code{ts} column.
+\end{itemize}
+
+\begin{whybox}[Expected result]
+Typed order documents in rubydebug; the \emph{M4} line turns green later.
+\end{whybox}
+
+\begin{docbox}[Doc pointers]
+Logstash reference: \emph{csv filter}.
+\end{docbox}
+
+\mission{Enrich and clean}{30 min}
+
+\begin{enumerate}
+  \item Enrich web events with \textbf{geolocation} derived from the client IP
+        (a \code{geoip} object with at least country and coordinates).
+  \item The \code{/healthz} probes are internal monitoring noise: they must
+        \textbf{not exist} in your output. Anywhere.
+  \item Bonus polish: parse the browser/OS out of the user-agent string.
+\end{enumerate}
+
+\begin{whybox}[Expected result]
+Web events carry \code{geoip.country\_name} and coordinates; zero
+\code{/healthz} documents. \code{check.sh} \emph{M5} lines green later.
+\end{whybox}
+
+\mission{Ship it. Lose nothing.}{40 min}
+
+Replace/extend the output section so that:
+\begin{itemize}
+  \item each source goes to its own dated index:
+        \code{shopfast-web-YYYY.MM.dd}, \code{shopfast-app-YYYY.MM.dd},
+        \code{shopfast-orders-YYYY.MM.dd};
+  \item \textbf{any} event that failed parsing — from any source — lands in
+        \code{shopfast-deadletter};
+  \item no event path leads nowhere: \textbf{nothing may be silently lost}.
+\end{itemize}
+
+\begin{lstlisting}[language=bash]
+./scripts/check.sh        # the goal: every line PASS
+\end{lstlisting}
+
+\begin{trapbox}
+Date-pattern index names use the \emph{event's} \code{@timestamp}. If missions
+2--4 got the date wrong, your indices will be named after the wrong day —
+check \code{GET \_cat/indices?v} with Course 1 eyes.
+\end{trapbox}
+
+\mission{Prove it}{15 min}
+
+\begin{enumerate}
+  \item Let the generator run a few minutes, then run \code{check.sh}:
+        \textbf{all PASS}.
+  \item In Dev Tools, write one query that counts dead-letter events \emph{per
+        source file} — paste it and its result into your write-up.
+  \item Skim 3 dead-letter documents: can you tell \emph{why} each one failed?
+        One line each.
+\end{enumerate}
+
+\begin{whybox}[Why this matters]
+In the final project, dead-letter handling and ``nothing silently lost'' are
+worth real points on an \emph{unseen} dataset — this mission is your rehearsal.
+\end{whybox}
+
+\section*{Bonus — One pipeline per source (+2)}
+
+Split your monolithic \code{pipeline.conf} into three isolated pipelines using
+\code{pipelines.yml}, without changing any behavior (\code{check.sh} must
+still be all green).
+
+\emph{Hint-free zone. The documentation page you need is about multiple
+pipelines — and remember how the Docker image decides what to run.}
+
+\bigskip
+\begin{center}
+\emph{Ship \code{pipeline.conf} + write-up before the deadline.\\
+Next session: Course 3 — Kibana, where your clean indices finally become pictures.}
+\end{center}
+
+\end{document}

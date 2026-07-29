@@ -1,0 +1,66 @@
+# Lab 2 — Elasticsearch + Kibana + Logstash (teaching setup: security disabled)
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.4
+    container_name: lab2-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.4
+    container_name: lab2-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:9.4.4
+    container_name: lab2-logstash
+    environment:
+      - LS_JAVA_OPTS=-Xms512m -Xmx512m
+      - XPACK_MONITORING_ENABLED=false
+      - PIPELINE_ECS_COMPATIBILITY=disabled
+      # config auto-reload: edit pipeline/*.conf, Logstash picks it up in ~3s
+      - CONFIG_RELOAD_AUTOMATIC=true
+    volumes:
+      - ./pipeline:/usr/share/logstash/pipeline
+      - ./logs:/var/log/shopfast:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # One-shot: switches Kibana's default space to classic navigation.
+  # (With security disabled, Kibana 9's default "Search" homepage errors out;
+  # classic navigation avoids it. This container runs once and exits: normal.)
+  kibana-init:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.4
+    container_name: lab2-kibana-init
+    depends_on:
+      - kibana
+    restart: "no"
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        until curl -s http://kibana:5601/api/status | grep -q '"level":"available"'; do sleep 3; done
+        curl -s -XPUT http://kibana:5601/api/spaces/space/default \
+             -H 'Content-Type: application/json' -H 'kbn-xsrf: true' \
+             -d '{"id":"default","name":"Default","solution":"classic"}' > /dev/null
+        echo "kibana default space set to classic navigation"
+
+volumes:
+  esdata:
